@@ -385,9 +385,9 @@ function applyJump() {
   const r = rowById(id);
   if (!r) { toast(t('notInList'), true); return; }
   if (S.proc === 'CUT' && S.machine && !FIX_MACHINE && machinesOf(r.cutEq).indexOf(S.machine) < 0) S.machine = '';
-  S.hl = { id: String(id), until: Date.now() + 60000, scroll: true };
+  S.hl = { proc: S.proc, id: String(id), until: Date.now() + 60000, scroll: true };
 }
-function isHl(r) { return S.hl && S.hl.id === String(r.id) && Date.now() < S.hl.until; }
+function isHl(r) { return S.hl && S.hl.proc === S.proc && S.hl.id === String(r.id) && Date.now() < S.hl.until; }
 function scrollToHl() {
   if (!S.hl || !S.hl.scroll) return;
   S.hl.scroll = false;
