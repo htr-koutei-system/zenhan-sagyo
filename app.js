@@ -2,7 +2,7 @@
 // 電波が切れたら「送信待ち」で持ち、つながったら同じ送信IDで送り直す（サーバーは同じ送信IDを二重に記録しない）。
 
 const API_URL = window.APP_CONFIG.API_URL;
-const APP_VER = 1;                    // 画面の版。サーバーの WORK.MIN_CLIENT_VER 以上にする。上げたら index.html の ?v= も変える
+const APP_VER = 2;                    // 画面の版。サーバーの WORK.MIN_CLIENT_VER 以上にする。上げたら index.html の ?v= も変える
 const IDLE_MS = 60 * 60 * 1000;       // 操作がないまま1時間でログアウト
 const TIMEOUT_MS = 30000;
 const RETRY_MS = 15000;               // 送信待ちを送り直す間隔
@@ -26,7 +26,9 @@ const S = {
   token: '', user: null, settings: null, lang: 'ja', proc: '', machine: FIX_MACHINE,
   rows: [], today: '', listAt: '', queue: [], sending: false, view: 'login', board: null, offline: false,
   lastAct: Date.now(), timers: {}, monitorUntil: 0,
+  jump: null, hl: null, bq: '', bf: 'all',
 };
+const NARROW = window.matchMedia('(max-width: 760px)');
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -270,8 +272,11 @@ function langButtons() {
 
 function renderLogin(msg) {
   $('view').innerHTML = '<div class="login clip"><div class="stripe"></div><h1>' + esc(t('appName')) + '</h1>' +
-    loginForm('l-') + langButtons() + '</div>';
+    (S.jump ? '<div class="sub jumpnote">' + esc(t('loginToOpen')) + '：' + esc(procName(S.jump.proc)) + '</div>' : '') +
+    loginForm('l-') + langButtons() +
+    '<div class="row"><button id="l-board" class="sm">' + esc(S.jump ? t('back') : t('board')) + '</button></div></div>';
   S.loginCtl = wireLogin('l-', doLogin);
+  $('l-board').addEventListener('click', () => { S.jump = null; if (!FIX_PROC) S.proc = ''; show('board'); });
   document.querySelectorAll('.langs button').forEach(b => b.addEventListener('click', () => { S.lang = b.dataset.lang; lsSet('zw_lang', S.lang); renderLogin(); setBar(); }));
   if (msg) $('l-err').textContent = msg;
 }
@@ -299,7 +304,9 @@ function afterLogin(j) {
   if (j.user.lang) S.lang = j.user.lang;
   S.lastAct = Date.now();
   const procs = S.user.procs;
-  if (FIX_PROC && procs.indexOf(FIX_PROC) >= 0) S.proc = FIX_PROC;
+  if (S.jump && procs.indexOf(S.jump.proc) < 0) { toast(t('notAssigned') + '：' + procName(S.jump.proc), true); S.jump = null; }
+  if (S.jump) S.proc = S.jump.proc;
+  else if (FIX_PROC && procs.indexOf(FIX_PROC) >= 0) S.proc = FIX_PROC;
   else if (S.proc && procs.indexOf(S.proc) >= 0) { /* そのまま */ }
   else S.proc = procs.length === 1 ? procs[0] : '';
   saveSession();
@@ -337,7 +344,8 @@ async function loadList(silent) {
     const j = await api('list', { proc: S.proc }, S.token);
     S.rows = j.rows; S.today = j.today; S.listAt = j.at; S.offline = false;
     lsSet('zw_rows_' + S.proc, { rows: j.rows, today: j.today, at: j.at });
-    if (S.view === 'list') renderList();
+    if (S.jump && S.jump.proc === S.proc) applyJump();
+    if (S.view === 'list') { renderList(); scrollToHl(); }
   } catch (e) {
     if (e.auth) { logout(e.message); return; }
     if (!silent) toast(e.message, true);
@@ -368,6 +376,25 @@ function visibleRows() {
   return rows;
 }
 
+function listMode() { return lsGet('zw_listmode') === 'table' ? 'table' : 'card'; }
+
+/** ボードから来たとき: 該当の行を強調（1分）。号機で絞っていて見えなければ絞り込みを外す */
+function applyJump() {
+  const id = S.jump.id;
+  S.jump = null;
+  const r = rowById(id);
+  if (!r) { toast(t('notInList'), true); return; }
+  if (S.proc === 'CUT' && S.machine && !FIX_MACHINE && machinesOf(r.cutEq).indexOf(S.machine) < 0) S.machine = '';
+  S.hl = { id: String(id), until: Date.now() + 60000, scroll: true };
+}
+function isHl(r) { return S.hl && S.hl.id === String(r.id) && Date.now() < S.hl.until; }
+function scrollToHl() {
+  if (!S.hl || !S.hl.scroll) return;
+  S.hl.scroll = false;
+  const el = document.querySelector('[data-row="' + CSS.escape(S.hl.id) + '"]');
+  if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
 function renderList() {
   const rows = visibleRows();
   const today = S.today || '';
@@ -375,19 +402,26 @@ function renderList() {
   const now = act.filter(r => !r.date || r.date <= today).sort(cmpRow);
   const fut = act.filter(r => r.date && r.date > today).sort(cmpRow);
   const done = rows.filter(r => r.status === '完了').sort((a, b) => (b.end || '').localeCompare(a.end || ''));
-  let h = '';
+  const mode = listMode();
+  let h = '<div class="list-head">';
   if (S.proc === 'CUT') {
     h += '<div class="chips">' + [''].concat(MACHINES).map(m => '<button class="sm' + (S.machine === m ? ' on' : '') + '" data-m="' + esc(m) + '"' +
       (FIX_MACHINE ? ' disabled' : '') + '>' + esc(m ? machineName(m) : t('all')) + '</button>').join('') + '</div>';
   }
+  h += '<div class="chips view-mode"><button class="sm' + (mode === 'card' ? ' on' : '') + '" data-vm="card">' + esc(t('viewCard')) + '</button>' +
+    '<button class="sm' + (mode === 'table' ? ' on' : '') + '" data-vm="table">' + esc(t('viewTable')) + '</button></div></div>';
   const sec = (title, list) => '<h2 class="sec">' + esc(title) + ' (' + list.length + ')</h2>' +
-    (list.length ? '<div class="cards">' + list.map(card).join('') + '</div>' : '<div class="empty">' + esc(t('none')) + '</div>');
+    (!list.length ? '<div class="empty">' + esc(t('none')) + '</div>' :
+      mode === 'table' ? '<div class="tablewrap"><table class="list"><thead><tr><th>' + esc(t('colStatus')) + '</th><th>' + esc(t('order')) + '</th><th>' +
+        esc(t('colItem')) + '</th><th>' + esc(t('colQty')) + '</th><th>' + esc(t('colStart')) + '</th><th></th></tr></thead><tbody>' + list.map(trow).join('') + '</tbody></table></div>' :
+        '<div class="cards">' + list.map(card).join('') + '</div>');
   h += sec(t('todayLate'), now) + sec(t('future'), fut) + sec(t('doneRecent'), done);
   h += '<div class="note">' + esc(t('updated')) + ' ' + esc(S.listAt) + (S.token || !MONITOR ? '' : ' ／ ' + esc(t('loginEach'))) + '</div>';
   if (!S.proc) h = '';
   $('view').innerHTML = h;
-  document.querySelectorAll('.chips button').forEach(b => b.addEventListener('click', () => { S.machine = b.dataset.m; renderList(); }));
-  document.querySelectorAll('.card button[data-act]').forEach(b => b.addEventListener('click', () => onAction(b.dataset.act, b.dataset.id, b)));
+  document.querySelectorAll('.chips button[data-m]').forEach(b => b.addEventListener('click', () => { S.machine = b.dataset.m; renderList(); }));
+  document.querySelectorAll('.chips button[data-vm]').forEach(b => b.addEventListener('click', () => { lsSet('zw_listmode', b.dataset.vm); renderList(); }));
+  document.querySelectorAll('#view button[data-act]').forEach(b => b.addEventListener('click', () => onAction(b.dataset.act, b.dataset.id, b)));
 }
 
 function cmpRow(a, b) {
@@ -395,15 +429,27 @@ function cmpRow(a, b) {
   return st(a) - st(b) || (a.date || '').localeCompare(b.date || '') || String(a.order).localeCompare(String(b.order)) || Number(a.id) - Number(b.id);
 }
 
-function card(r) {
+/** 成形で 材料寸法・材料ID が空いている項目（変更画面の項目キー） */
+function missingMat(r) {
+  if (S.proc !== 'MOLD' || r.status === '完了') return [];
+  return ['size', 'matId'].filter(k => !String(r[k] || '').trim());
+}
+
+/** カード・表で共通の部品 */
+function parts(r) {
   const p = S.proc;
   const pend = S.queue.some(q => q.data.id === r.id && q.data.proc === p);
+  const viewOnly = S.user && !S.user.input;   // 閲覧の人は見るだけ（ボタンを出さない）
+  const btn = (act, label, cls) => '<button data-act="' + act + '" data-id="' + esc(r.id) + '" class="' + (cls || '') + '"' + (pend ? ' disabled' : '') + '>' + esc(label) + '</button>';
   const dateTag = r.status === '完了' ? '' : r.late ? '<span class="tag late">' + esc(t('late')) + '</span>' : (r.date === S.today ? '<span class="tag today">' + esc(t('today')) + '</span>' : '');
   const meta = [];
   if (p === 'MOLD') { if (r.size) meta.push(t('size') + ' <b>' + esc(r.size) + '</b>'); if (r.moldEq) meta.push(t('moldEq') + ' <b>' + esc(r.moldEq) + '</b>'); }
   if (p === 'CUT') { if (r.cutEq) meta.push(t('cutEq') + ' <b>' + esc(r.cutEq) + '</b>'); if (r.jig) meta.push(t('jig') + ' <b>' + esc(r.jig) + '</b>'); }
   if (p === 'SAND' && r.material) meta.push(esc(r.material));
   if (r.matId) meta.push(esc(r.matId));
+  const miss = missingMat(r);
+  const mat = miss.length ? '<div class="matwarn"><span>' + esc(t('noMaterial')) + '（' + miss.map(k => esc(t(k))).join('・') + '）</span>' +
+    (viewOnly ? '' : btn('fixmat', t('fixMaterial'), 'danger sm')) + '</div>' : '';
   let prev = '';
   if (r.prev) {
     if (r.prev.diff !== null && r.prev.diff !== undefined) {
@@ -413,33 +459,57 @@ function card(r) {
       prev = esc(t('prevProc')) + '（' + esc(procName(r.prev.proc)) + '） ' + esc(stName(r.prev.state || '未着手')) + (r.prev.good ? ' ' + r.prev.good : '');
     }
   }
+  const times = [r.start ? t('startAt') + ' ' + esc(r.start === '不明' ? t('unknown') : r.start.slice(5)) : '', r.end ? t('endAt') + ' ' + esc(r.end.slice(5)) : '',
+                 r.workers ? t('workers') + ' ' + esc(r.workers) : ''].filter(Boolean).join('　');
+  const canChange = p === 'MOLD' || p === 'CUT';
+  // ボタン: main＝一番大きく、mid＝ふつう、sub＝小さく下へ。完了は開始してから（未着手・中断には出さない）
+  let main = '', mid = '', sub = '';
+  if (r.status === '作業中') {
+    main = btn('complete', t('complete'), 'primary big');
+    mid = btn('interrupt', t('interrupt'), 'accent') + (!r.mine && S.token ? btn('join', t('join')) : '');
+    sub = canChange ? btn('change', t('change'), 'sm') : '';
+  } else if (r.status === '完了') {
+    if ((MONITOR && !S.token) || (r.undo && r.undo.ok)) mid = btn('undo', t('undo'), 'danger');
+  } else {
+    main = btn('start', t('start'), 'primary big');
+    sub = canChange ? btn('change', t('change'), 'sm') : '';
+  }
+  if (viewOnly) main = mid = sub = '';
+  return { pend: pend, dateTag: dateTag, meta: meta, mat: mat, prev: prev, times: times, main: main, mid: mid, sub: sub };
+}
+
+function card(r) {
+  const p = S.proc;
+  const x = parts(r);
   const qty = '<div class="qty"><span>' + esc(t('planned')) + ' <span class="big">' + r.qty + '</span></span>' +
     (r.remain !== r.qty && r.status !== '完了' ? '<span>' + esc(t('remain')) + ' <span class="big">' + r.remain + '</span></span>' : '') +
     (r.status === '完了' ? '<span>' + esc(t('good')) + ' <span class="big">' + r.good + '</span></span>' : '') +
-    (prev ? '<span>' + prev + '</span>' : '') + '</div>';
-  const times = [r.start ? t('startAt') + ' ' + esc(r.start === '不明' ? t('unknown') : r.start.slice(5)) : '', r.end ? t('endAt') + ' ' + esc(r.end.slice(5)) : '',
-                 r.workers ? t('workers') + ' ' + esc(r.workers) : ''].filter(Boolean).join('　');
+    (x.prev ? '<span>' + x.prev + '</span>' : '') + '</div>';
   const sc = p === 'BOND' && r.sc ? '<div class="meta">' + esc(t('sc')) + ': ' + esc(String(r.sc).replace(/\n/g, ' / ')) + '</div>' : '';
-  const btn = (act, label, cls) => '<button data-act="' + act + '" data-id="' + esc(r.id) + '" class="' + (cls || '') + '"' + (pend ? ' disabled' : '') + '>' + esc(label) + '</button>';
-  const canChange = p === 'MOLD' || p === 'CUT';
-  const viewOnly = S.user && !S.user.input;   // 閲覧の人は見るだけ（ボタンを出さない）
-  let acts = '';
-  if (r.status === '作業中') {
-    acts = btn('complete', t('complete'), 'primary') + btn('interrupt', t('interrupt'), 'accent') +
-      (!r.mine && S.token ? btn('join', t('join')) : '') + (canChange ? btn('change', t('change')) : '');
-  } else if (r.status === '完了') {
-    if ((MONITOR && !S.token) || (r.undo && r.undo.ok)) acts = btn('undo', t('undo'), 'danger');
-  } else {
-    acts = btn('start', t('start'), 'primary') + btn('complete', t('complete')) + (canChange ? btn('change', t('change')) : '');
-  }
-  if (viewOnly) acts = '';
-  return '<div class="card clip st-' + esc(r.status) + '"><div class="pbar" style="background:var(--' + p + ')"></div>' +
-    '<div class="top"><span class="tag st st-' + esc(r.status) + '">' + esc(stName(r.status)) + '</span>' + dateTag +
-    '<span>' + esc(r.date) + '</span><span>' + esc(t('order')) + ' ' + esc(r.order) + '</span>' + (pend ? '<span class="pending">' + esc(t('pending')) + '</span>' : '') + '</div>' +
+  const acts = (x.main ? '<div class="actions main">' + x.main + '</div>' : '') + (x.mid ? '<div class="actions">' + x.mid + '</div>' : '') +
+    (x.sub ? '<div class="actions sub">' + x.sub + '</div>' : '');
+  return '<div class="card clip st-' + esc(r.status) + (isHl(r) ? ' hl' : '') + '" data-row="' + esc(r.id) + '"><div class="pbar" style="background:var(--' + p + ')"></div>' +
+    '<div class="top"><span class="tag st st-' + esc(r.status) + '">' + esc(stName(r.status)) + '</span>' + x.dateTag +
+    '<span>' + esc(r.date) + '</span><span>' + esc(t('order')) + ' ' + esc(r.order) + '</span>' + (x.pend ? '<span class="pending">' + esc(t('pending')) + '</span>' : '') + '</div>' +
     '<div class="pno">' + esc(r.pno) + '</div><div class="name">' + esc([r.maker, r.car, r.part].filter(Boolean).join(' ／ ')) + '</div>' +
-    (meta.length ? '<div class="meta">' + meta.join('　') + '</div>' : '') + sc + qty +
-    (times ? '<div class="meta">' + times + '</div>' : '') + (r.note ? '<div class="note">' + esc(r.note) + '</div>' : '') +
-    (acts ? '<div class="actions">' + acts + '</div>' : '') + '</div>';
+    x.mat + (x.meta.length ? '<div class="meta">' + x.meta.join('　') + '</div>' : '') + sc + qty +
+    (x.times ? '<div class="meta">' + x.times + '</div>' : '') + (r.note ? '<div class="note">' + esc(r.note) + '</div>' : '') + acts + '</div>';
+}
+
+/** 表（1行1件） */
+function trow(r) {
+  const x = parts(r);
+  const qty = r.status === '完了' ? t('good') + ' <b>' + r.good + '</b>／' + r.qty :
+    '<b>' + r.remain + '</b>' + (r.remain !== r.qty ? '／' + r.qty : '');
+  return '<tr class="st-' + esc(r.status) + (isHl(r) ? ' hl' : '') + '" data-row="' + esc(r.id) + '">' +
+    '<td><span class="tag st st-' + esc(r.status) + '">' + esc(stName(r.status)) + '</span> ' + x.dateTag + (x.pend ? ' <span class="pending">' + esc(t('pending')) + '</span>' : '') +
+    '<div class="note">' + esc(r.date) + '</div></td>' +
+    '<td class="nowrap">' + esc(r.order) + '</td>' +
+    '<td><b>' + esc(r.pno) + '</b><div class="name note">' + esc([r.maker, r.car, r.part].filter(Boolean).join(' ／ ')) + '</div>' + x.mat +
+    (x.meta.length ? '<div class="note">' + x.meta.join('　') + '</div>' : '') + '</td>' +
+    '<td class="nowrap">' + qty + (x.prev ? '<div class="note">' + x.prev + '</div>' : '') + '</td>' +
+    '<td class="note">' + x.times + '</td>' +
+    '<td class="tacts">' + x.main.replace('primary big', 'primary') + x.mid + x.sub + '</td></tr>';
 }
 
 function rowById(id) { return S.rows.find(r => String(r.id) === String(id)); }
@@ -464,6 +534,7 @@ function onAction(act, id, btn) {
     else if (act === 'complete') openComplete(r, user);
     else if (act === 'interrupt') openInterrupt(r, user);
     else if (act === 'change') openChange(r, user);
+    else if (act === 'fixmat') openChange(r, user, missingMat(r)[0]);
     else if (act === 'undo') doUndo(r, user);
   });
 }
@@ -721,10 +792,10 @@ function openInterrupt(r, who) {
 }
 
 // ---------- 変更 ----------
-function openChange(r, who) {
-  const keys = S.proc === 'MOLD' ? ['size', 'moldEq'] : ['cutEq', 'jig'];
+function openChange(r, who, preset) {
+  const keys = S.proc === 'MOLD' ? ['size', 'matId', 'moldEq'] : ['cutEq', 'jig'];
   const items = (S.settings.changeItems || []).filter(x => keys.indexOf(x.key) >= 0);
-  let pick = items[0] ? items[0].key : '';
+  let pick = preset && items.some(x => x.key === preset) ? preset : (items[0] ? items[0].key : '');
   const draw = () => {
     const it = items.find(x => x.key === pick);
     openModal('<h3>' + esc(t('change')) + '　' + esc(r.pno) + '</h3><div class="sub">' + esc(t('changeNote')) + '</div>' +
@@ -801,49 +872,117 @@ function orderDate(o, key) {
   return ds[0] || '';
 }
 function md(d) { return d ? d.slice(5).replace('-', '/') : ''; }
+/** 検索の比べ方: 全角半角・大文字小文字・空白と「-」の違いを無視 */
+function nz(s) { return String(s == null ? '' : s).normalize('NFKC').toUpperCase().replace(/[\s\-‐－ー_]/g, ''); }
 
-function renderBoard() {
-  const b = S.board;
+/** マスを押して作業一覧へ移れるか。対象外・ボードだけの画面・URLで工程を固定した端末の他の工程・担当外は押せない */
+function canJump(c, x) {
+  if (BOARD_ONLY || x.st === '対象外') return false;
+  if (FIX_PROC && c !== FIX_PROC) return false;
+  if (S.token && S.user) return S.user.procs.indexOf(c) >= 0;
+  return true;   // ログインしていなければ押したときにログインを聞く（大型モニターはそのまま一覧）
+}
+
+function jumpTo(c, id) {
+  touchAct();
+  S.jump = { proc: c, id: String(id) };
+  if (S.token || MONITOR) {
+    S.proc = c; S.rows = []; S.listAt = '';
+    if (c !== 'CUT') S.machine = FIX_MACHINE;
+    saveSession(); show('list'); loadList();
+    return;
+  }
+  S.proc = c;
+  show('login');
+}
+
+function boardRows(b) {
+  const q = nz(S.bq);
   const so = boardSort();
-  let h = '<div class="board-head"><h2 class="sec" style="flex:1">' + esc(t('board')) + '</h2>' +
-    '<label class="note" for="bs-key">' + esc(t('sortBy')) + '</label><select id="bs-key">' +
-    SORT_KEYS.map(k => '<option value="' + k + '"' + (k === so.key ? ' selected' : '') + '>' + esc(sortKeyName(k)) + '</option>').join('') + '</select>' +
-    '<button id="bs-dir" class="sm accent">' + esc(so.dir === 'asc' ? t('asc') : t('desc')) + '</button>' +
-    '<span class="note">' + esc(t('updated')) + ' ' + esc(b ? b.at : '…') + '</span></div>';
-  if (!b) { $('view').innerHTML = h; wireBoardHead(); return; }
-  const list = b.orders.map(o => ({ o: o, d: orderDate(o, so.key) }));
+  const list = [];
+  b.orders.forEach(o => {
+    const om = q && nz(o.order).indexOf(q) >= 0;
+    const rows = o.rows.filter(r => {
+      if (q && !om && nz(r.pno).indexOf(q) < 0) return false;
+      if (S.bf === 'short') return !!r.short;
+      if (S.bf === 'today') return r.procs.some(x => x.doneDay && x.doneDay === b.today);
+      return true;
+    });
+    if (rows.length) list.push({ o: o, rows: rows, d: orderDate(o, so.key) });
+  });
   list.sort((x, y) => {
     if (!x.d !== !y.d) return x.d ? -1 : 1;           // 日付の無い注文はいつも最後
     const c = x.d < y.d ? -1 : x.d > y.d ? 1 : 0;
     return (so.dir === 'asc' ? c : -c) || String(x.o.order).localeCompare(String(y.o.order));
   });
-  h += '<table class="board"><thead><tr><th>' + esc(sortKeyName(so.key)) + '</th><th>' + esc(t('order')) + '</th><th></th><th>' + esc(t('planned')) + '</th>' +
-    PROC_CODES.map(c => '<th style="color:var(--' + c + ')">' + esc(procName(c)) + '</th>').join('') + '</tr></thead><tbody>';
-  list.forEach(({ o, d }) => {
-    o.rows.forEach((r, i) => {
-      h += '<tr class="' + (r.done ? 'done' : '') + '">' +
-        (i === 0 ? '<td rowspan="' + o.rows.length + '">' + esc(md(d)) + '</td><td class="order" rowspan="' + o.rows.length + '">' + esc(o.order) + '</td>' : '') +
-        '<td><b>' + esc(r.pno) + '</b>' + (r.kind === 'SC' ? ' <span class="note">SC</span>' : '') + '<div class="name note">' + esc(r.part) + '</div>' +
-        (r.short ? '<div class="shortmark">' + esc(r.short) + '</div>' : '') + '</td><td>' + r.qty + '</td>' +
-        r.procs.map((x, k) => {
-          const c = PROC_CODES[k];
-          const style = x.st === '済' ? 'background:var(--' + c + ');border-color:var(--' + c + ')' : x.st === '作業中' ? 'border-color:var(--' + c + ');color:var(--' + c + ')' : '';
-          const n = x.st === '対象外' ? '' : (x.good || x.st !== '未' ? ' ' + x.good + '/' + r.qty : '');
-          const plan = x.st === '対象外' || !x.start ? '' : '<div class="plan">' + esc(md(x.start)) + (x.end && x.end !== x.start ? '〜' + esc(md(x.end)) : '') + '</div>';
-          return '<td><span class="cell ' + esc(x.st) + '" style="' + style + '">' + esc(t('st_' + x.st)) + esc(n) + '</span>' + plan + '</td>';
-        }).join('') + '</tr>';
-    });
-  });
-  h += '</tbody></table>';
-  if (!b.orders.length) h += '<div class="empty">' + esc(t('none')) + '</div>';
-  $('view').innerHTML = h;
-  wireBoardHead();
+  return list;
 }
 
-function wireBoardHead() {
+/** 工程の1マス（押せるならボタン） */
+function bcell(r, x, k) {
+  const c = PROC_CODES[k];
+  const style = x.st === '済' ? 'background:var(--' + c + ');border-color:var(--' + c + ')' : x.st === '作業中' ? 'border-color:var(--' + c + ');color:var(--' + c + ')' : '';
+  const n = x.st === '対象外' ? '' : (x.good || x.st !== '未' ? ' ' + x.good + '/' + r.qty : '');
+  const plan = x.st === '対象外' || !x.start ? '' : '<div class="plan">' + esc(md(x.start)) + (x.end && x.end !== x.start ? '〜' + esc(md(x.end)) : '') + '</div>';
+  const label = esc(t('st_' + x.st)) + esc(n);
+  const el = canJump(c, x) ? '<button class="cell go ' + esc(x.st) + '" style="' + style + '" data-jp="' + c + '" data-jid="' + esc(r.id) + '" title="' + esc(procName(c)) + '">' + label + '</button>' :
+    '<span class="cell ' + esc(x.st) + '" style="' + style + '">' + label + '</span>';
+  return el + plan;
+}
+
+function renderBoard() {
+  const b = S.board;
+  const so = boardSort();
+  const ae = document.activeElement, keep = ae && ae.id === 'bs-q' ? [ae.selectionStart, ae.selectionEnd] : null;
+  let h = '<div class="board-head"><h2 class="sec" style="flex:1 1 200px">' + esc(t('board')) + '</h2>' +
+    '<label class="note" for="bs-key">' + esc(t('sortBy')) + '</label><select id="bs-key">' +
+    SORT_KEYS.map(k => '<option value="' + k + '"' + (k === so.key ? ' selected' : '') + '>' + esc(sortKeyName(k)) + '</option>').join('') + '</select>' +
+    '<button id="bs-dir" class="sm accent">' + esc(so.dir === 'asc' ? t('asc') : t('desc')) + '</button>' +
+    '<span class="note">' + esc(t('updated')) + ' ' + esc(b ? b.at : '…') + '</span></div>' +
+    '<div class="board-find"><input id="bs-q" type="search" autocomplete="off" placeholder="' + esc(t('searchPh')) + '" value="' + esc(S.bq) + '">' +
+    '<div class="chips">' + [['all', 'fAll'], ['short', 'fShort'], ['today', 'fDoneToday']].map(f => '<button class="sm' + (S.bf === f[0] ? ' on' : '') + '" data-bf="' + f[0] + '">' + esc(t(f[1])) + '</button>').join('') + '</div></div>';
+  if (!b) { $('view').innerHTML = h; wireBoardHead(keep); return; }
+  const list = boardRows(b);
+  const total = b.orders.length;
+  h += '<div class="note">' + esc(t('shown')) + ' ' + list.length + ' ／ ' + total + (BOARD_ONLY ? '' : '　' + esc(t('tapCell'))) + '</div>';
+  if (NARROW.matches) {
+    // スマホ幅: 注文ごとのまとまりに、工程4つを2列×2段で
+    h += '<div class="bcards">' + list.map(({ o, rows, d }) => '<div class="bcard"><div class="bhead"><span>' + esc(md(d)) + '</span><b>' + esc(t('order')) + ' ' + esc(o.order) + '</b></div>' +
+      rows.map(r => '<div class="brow' + (r.done ? ' done' : '') + '"><div><b>' + esc(r.pno) + '</b>' + (r.kind === 'SC' ? ' <span class="note">SC</span>' : '') +
+        ' <span class="note">' + esc(t('planned')) + ' ' + r.qty + '</span>' + (r.short ? ' <span class="shortmark">' + esc(r.short) + '</span>' : '') +
+        '<div class="name note">' + esc(r.part) + '</div></div><div class="bprocs">' +
+        r.procs.map((x, k) => '<div class="bp"><div class="pn" style="color:var(--' + PROC_CODES[k] + ')">' + esc(procName(PROC_CODES[k])) + '</div>' + bcell(r, x, k) + '</div>').join('') +
+        '</div></div>').join('') + '</div>').join('') + '</div>';
+  } else {
+    h += '<table class="board"><thead><tr><th>' + esc(sortKeyName(so.key)) + '</th><th>' + esc(t('order')) + '</th><th></th><th>' + esc(t('planned')) + '</th>' +
+      PROC_CODES.map(c => '<th style="color:var(--' + c + ')">' + esc(procName(c)) + '</th>').join('') + '</tr></thead><tbody>';
+    list.forEach(({ o, rows, d }) => {
+      rows.forEach((r, i) => {
+        h += '<tr class="' + (r.done ? 'done' : '') + '">' +
+          (i === 0 ? '<td rowspan="' + rows.length + '">' + esc(md(d)) + '</td><td class="order" rowspan="' + rows.length + '">' + esc(o.order) + '</td>' : '') +
+          '<td><b>' + esc(r.pno) + '</b>' + (r.kind === 'SC' ? ' <span class="note">SC</span>' : '') + '<div class="name note">' + esc(r.part) + '</div>' +
+          (r.short ? '<div class="shortmark">' + esc(r.short) + '</div>' : '') + '</td><td>' + r.qty + '</td>' +
+          r.procs.map((x, k) => '<td>' + bcell(r, x, k) + '</td>').join('') + '</tr>';
+      });
+    });
+    h += '</tbody></table>';
+  }
+  if (!list.length) h += '<div class="empty">' + esc(t('none')) + '</div>';
+  $('view').innerHTML = h;
+  wireBoardHead(keep);
+  document.querySelectorAll('#view button[data-jp]').forEach(el => el.addEventListener('click', () => jumpTo(el.dataset.jp, el.dataset.jid)));
+}
+
+function wireBoardHead(keep) {
   $('bs-key').addEventListener('change', e => { const so = boardSort(); so.key = e.target.value; lsSet('zw_bsort', so); renderBoard(); });
   $('bs-dir').addEventListener('click', () => { const so = boardSort(); so.dir = so.dir === 'asc' ? 'desc' : 'asc'; lsSet('zw_bsort', so); renderBoard(); });
+  const q = $('bs-q');
+  q.addEventListener('input', () => { S.bq = q.value; renderBoard(); });
+  q.addEventListener('keydown', e => { if (e.key === 'Escape') { S.bq = ''; renderBoard(); } });
+  if (keep) { q.focus(); try { q.setSelectionRange(keep[0], keep[1]); } catch (e) {} }
+  document.querySelectorAll('.board-find button[data-bf]').forEach(el => el.addEventListener('click', () => { S.bf = el.dataset.bf; renderBoard(); }));
 }
+NARROW.addEventListener('change', () => { if (S.view === 'board') renderBoard(); });
 
 // ---------- 上のバーのボタン ----------
 $('btn-board').addEventListener('click', () => {
