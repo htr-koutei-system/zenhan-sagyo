@@ -155,7 +155,21 @@ function setBar() {
   bar.classList.toggle('hidden', S.view === 'login' && !MONITOR);
   $('bar-title').textContent = BOARD_ONLY ? t('board') : t('appName');
   const p = S.proc;
-  $('bar-proc').innerHTML = p && S.view !== 'board' ? '<span class="proc-tag clip" style="background:var(--' + p + ')">' + esc(procName(p)) + '</span>' : '';
+  // 担当の工程が2つ以上なら、ログアウトせずに切り替えられるタブを出す（URLで工程を固定した端末は出さない）
+  const tabs = FIX_PROC ? [] : (S.user ? S.user.procs : (MONITOR ? PROC_CODES : []));
+  if (S.view === 'list' && tabs.length > 1) {
+    $('bar-proc').innerHTML = '<span class="proc-tabs">' + tabs.map(c => '<button class="sm' + (c === p ? ' on' : '') + '" data-tab="' + c + '" style="' +
+      (c === p ? 'background:var(--' + c + ');border-color:var(--' + c + ');color:var(--bg)' : 'border-color:var(--' + c + ');color:var(--' + c + ')') + '">' + esc(procName(c)) + '</button>').join('') + '</span>';
+    document.querySelectorAll('#bar-proc button[data-tab]').forEach(b => b.addEventListener('click', () => {
+      if (b.dataset.tab === S.proc) return;
+      touchAct();
+      S.proc = b.dataset.tab; S.rows = []; S.listAt = '';
+      if (S.proc !== 'CUT') S.machine = FIX_MACHINE;
+      saveSession(); show('list'); loadList();
+    }));
+  } else {
+    $('bar-proc').innerHTML = p && S.view !== 'board' ? '<span class="proc-tag clip" style="background:var(--' + p + ')">' + esc(procName(p)) + '</span>' : '';
+  }
   $('bar-user').textContent = S.user ? S.user.name : '';
   $('btn-board').textContent = S.view === 'board' ? t('back') : t('board');
   $('btn-board').classList.toggle('hidden', BOARD_ONLY);
@@ -777,29 +791,58 @@ async function loadBoard() {
   }
 }
 
+const SORT_KEYS = ['MOLD', 'CUT', 'SAND', 'BOND', 'SHIP'];
+function boardSort() { const v = lsGet('zw_bsort'); return v && SORT_KEYS.indexOf(v.key) >= 0 ? v : { key: 'MOLD', dir: 'asc' }; }
+function sortKeyName(k) { return k === 'SHIP' ? t('shipPlan') : procName(k) + ' ' + t('startPlan'); }
+/** 注文の並べ替えに使う日付（その注文の行のうちいちばん早い日。無ければ ''） */
+function orderDate(o, key) {
+  const k = PROC_CODES.indexOf(key);
+  const ds = o.rows.map(r => key === 'SHIP' ? r.ship : (r.procs[k] && r.procs[k].start) || '').filter(Boolean).sort();
+  return ds[0] || '';
+}
+function md(d) { return d ? d.slice(5).replace('-', '/') : ''; }
+
 function renderBoard() {
   const b = S.board;
-  let h = '<div class="board-head"><h2 class="sec" style="flex:1">' + esc(t('board')) + '</h2><span class="note">' + esc(t('updated')) + ' ' + esc(b ? b.at : '…') + '</span></div>';
-  if (!b) { $('view').innerHTML = h; return; }
-  h += '<table class="board"><thead><tr><th>' + esc(t('mold')) + '</th><th>' + esc(t('order')) + '</th><th></th><th>' + esc(t('planned')) + '</th>' +
+  const so = boardSort();
+  let h = '<div class="board-head"><h2 class="sec" style="flex:1">' + esc(t('board')) + '</h2>' +
+    '<label class="note" for="bs-key">' + esc(t('sortBy')) + '</label><select id="bs-key">' +
+    SORT_KEYS.map(k => '<option value="' + k + '"' + (k === so.key ? ' selected' : '') + '>' + esc(sortKeyName(k)) + '</option>').join('') + '</select>' +
+    '<button id="bs-dir" class="sm accent">' + esc(so.dir === 'asc' ? t('asc') : t('desc')) + '</button>' +
+    '<span class="note">' + esc(t('updated')) + ' ' + esc(b ? b.at : '…') + '</span></div>';
+  if (!b) { $('view').innerHTML = h; wireBoardHead(); return; }
+  const list = b.orders.map(o => ({ o: o, d: orderDate(o, so.key) }));
+  list.sort((x, y) => {
+    if (!x.d !== !y.d) return x.d ? -1 : 1;           // 日付の無い注文はいつも最後
+    const c = x.d < y.d ? -1 : x.d > y.d ? 1 : 0;
+    return (so.dir === 'asc' ? c : -c) || String(x.o.order).localeCompare(String(y.o.order));
+  });
+  h += '<table class="board"><thead><tr><th>' + esc(sortKeyName(so.key)) + '</th><th>' + esc(t('order')) + '</th><th></th><th>' + esc(t('planned')) + '</th>' +
     PROC_CODES.map(c => '<th style="color:var(--' + c + ')">' + esc(procName(c)) + '</th>').join('') + '</tr></thead><tbody>';
-  b.orders.forEach(o => {
+  list.forEach(({ o, d }) => {
     o.rows.forEach((r, i) => {
       h += '<tr class="' + (r.done ? 'done' : '') + '">' +
-        (i === 0 ? '<td rowspan="' + o.rows.length + '">' + esc(o.mold.slice(5)) + '</td><td class="order" rowspan="' + o.rows.length + '">' + esc(o.order) + '</td>' : '') +
+        (i === 0 ? '<td rowspan="' + o.rows.length + '">' + esc(md(d)) + '</td><td class="order" rowspan="' + o.rows.length + '">' + esc(o.order) + '</td>' : '') +
         '<td><b>' + esc(r.pno) + '</b>' + (r.kind === 'SC' ? ' <span class="note">SC</span>' : '') + '<div class="name note">' + esc(r.part) + '</div>' +
         (r.short ? '<div class="shortmark">' + esc(r.short) + '</div>' : '') + '</td><td>' + r.qty + '</td>' +
         r.procs.map((x, k) => {
           const c = PROC_CODES[k];
           const style = x.st === '済' ? 'background:var(--' + c + ');border-color:var(--' + c + ')' : x.st === '作業中' ? 'border-color:var(--' + c + ');color:var(--' + c + ')' : '';
           const n = x.st === '対象外' ? '' : (x.good || x.st !== '未' ? ' ' + x.good + '/' + r.qty : '');
-          return '<td><span class="cell ' + esc(x.st) + '" style="' + style + '">' + esc(t('st_' + x.st)) + esc(n) + '</span></td>';
+          const plan = x.st === '対象外' || !x.start ? '' : '<div class="plan">' + esc(md(x.start)) + (x.end && x.end !== x.start ? '〜' + esc(md(x.end)) : '') + '</div>';
+          return '<td><span class="cell ' + esc(x.st) + '" style="' + style + '">' + esc(t('st_' + x.st)) + esc(n) + '</span>' + plan + '</td>';
         }).join('') + '</tr>';
     });
   });
   h += '</tbody></table>';
   if (!b.orders.length) h += '<div class="empty">' + esc(t('none')) + '</div>';
   $('view').innerHTML = h;
+  wireBoardHead();
+}
+
+function wireBoardHead() {
+  $('bs-key').addEventListener('change', e => { const so = boardSort(); so.key = e.target.value; lsSet('zw_bsort', so); renderBoard(); });
+  $('bs-dir').addEventListener('click', () => { const so = boardSort(); so.dir = so.dir === 'asc' ? 'desc' : 'asc'; lsSet('zw_bsort', so); renderBoard(); });
 }
 
 // ---------- 上のバーのボタン ----------

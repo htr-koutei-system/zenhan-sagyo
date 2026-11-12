@@ -159,3 +159,9 @@ main.wide { max-width: none; }
 .board { font-size: 19px; }
 .board .cell { min-width: 110px; font-size: 18px; }
 @media (min-width: 1600px) { .board { font-size: 22px; } .board .cell { font-size: 21px; min-width: 130px; } }
+
+/* 工程の切り替えタブ・全体の進み具合の予定日と並べ替え */
+.proc-tabs { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.proc-tabs button { min-height: 44px; }
+.board .plan { font-size: 14px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+.board-head select { min-height: 44px; background: var(--panel2); border: 2px solid var(--accent); padding: 0 10px; font-size: 16px; }

@@ -81,6 +81,11 @@ window.I18N = {
   unknown: ['不明', 'Unknown', 'Hindi alam', 'Desconhecido', 'Desconocido'],
   carried: ['前工程の数に合わせました', 'Adjusted to previous process', 'Inayon sa nakaraang proseso', 'Ajustado ao processo anterior', 'Ajustado al proceso anterior'],
   viewOnly: ['閲覧のみのため入力できません', 'View only: you cannot enter data', 'Pagtingin lamang: hindi makakapag-input', 'Somente visualização: não é possível registrar', 'Solo lectura: no puede registrar'],
+  sortBy: ['並べ替え', 'Sort by', 'Ayusin ayon sa', 'Ordenar por', 'Ordenar por'],
+  asc: ['昇順（古い順）', 'Ascending (oldest first)', 'Pataas (pinakaluma muna)', 'Crescente (mais antigo primeiro)', 'Ascendente (más antiguo primero)'],
+  desc: ['降順（新しい順）', 'Descending (newest first)', 'Pababa (pinakabago muna)', 'Decrescente (mais recente primeiro)', 'Descendente (más reciente primero)'],
+  startPlan: ['開始予定日', 'planned start', 'planong simula', 'início previsto', 'inicio previsto'],
+  shipPlan: ['出荷予定日', 'Planned ship date', 'Planong petsa ng padala', 'Data prevista de envio', 'Fecha prevista de envío'],
   undoLimit: ['取り消せません', 'Cannot undo', 'Hindi ma-undo', 'Não é possível desfazer', 'No se puede deshacer'],
 };
 window.LANG_NAMES = { ja: '日本語', en: 'English', tl: 'Tagalog', pt: 'Português', es: 'Español' };
