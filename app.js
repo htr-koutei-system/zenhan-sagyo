@@ -481,11 +481,13 @@ function parts(r) {
 function card(r) {
   const p = S.proc;
   const x = parts(r);
-  const qty = '<div class="qty"><span>' + esc(t('planned')) + ' <span class="big">' + r.qty + '</span></span>' +
+  const qty = r.status === '中断' ? '<div class="qty"><span class="stopq">' + esc(t('stopping')) + '　' + esc(t('remain')) + ' <span class="big">' + r.remain + '</span>（' + esc(t('planned')) + ' ' + (r.plan || r.qty) + '）</span>' +
+    (x.prev ? '<span>' + x.prev + '</span>' : '') + '</div>' + stopInfo(r) :
+    '<div class="qty"><span>' + esc(t('planned')) + ' <span class="big">' + r.qty + '</span></span>' +
     (r.remain !== r.qty && r.status !== '完了' ? '<span>' + esc(t('remain')) + ' <span class="big">' + r.remain + '</span></span>' : '') +
     (r.status === '完了' ? '<span>' + esc(t('good')) + ' <span class="big">' + r.good + '</span></span>' : '') +
     (x.prev ? '<span>' + x.prev + '</span>' : '') + '</div>';
-  const sc = p === 'BOND' && r.sc ? '<div class="meta">' + esc(t('sc')) + ': ' + esc(String(r.sc).replace(/\n/g, ' / ')) + '</div>' : '';
+  const sc = p === 'BOND' ? scBlock(r) : '';
   const acts = (x.main ? '<div class="actions main">' + x.main + '</div>' : '') + (x.mid ? '<div class="actions">' + x.mid + '</div>' : '') +
     (x.sub ? '<div class="actions sub">' + x.sub + '</div>' : '');
   return '<div class="card clip st-' + esc(r.status) + (isHl(r) ? ' hl' : '') + '" data-row="' + esc(r.id) + '"><div class="pbar" style="background:var(--' + p + ')"></div>' +
@@ -496,17 +498,36 @@ function card(r) {
     (x.times ? '<div class="meta">' + x.times + '</div>' : '') + (r.note ? '<div class="note">' + esc(r.note) + '</div>' : '') + acts + '</div>';
 }
 
+/** 中断の理由・人・時刻（小さく） */
+function stopInfo(r) {
+  if (!r.stop) return '';
+  const at = String(r.stop.at || '');
+  return '<div class="note stopinfo">' + [r.stop.reason ? t('stopReason') + ': ' + esc(r.stop.reason) : '', esc(r.stop.by || ''),
+    esc(at.length > 5 ? at.slice(5) : at)].filter(Boolean).join('　') + '</div>';
+}
+
+/** 接着のSC部品の一覧。カットが済んでいない部品は赤字（判定できないものは黒） */
+function scBlock(r) {
+  const list = r.scs || (r.sc ? String(r.sc).split('\n').filter(x => x.trim()).map(x => ({ pno: x.trim(), name: '', cut: '' })) : []);
+  if (!list.length) return '';
+  const todo = list.filter(x => x.cut === 'todo').length;
+  return '<div class="sclist"><div class="note">' + esc(t('sc')) + ' ' + list.length + (todo ? '　<b class="sctodo">' + esc(t('scNotCutN')) + ' ' + todo + '</b>' : '') + '</div>' +
+    list.map(x => '<div class="scline' + (x.cut === 'todo' ? ' sctodo' : '') + '"><b>' + esc(x.pno) + '</b> ' + esc(x.name) +
+      (x.cut === 'todo' ? '　' + esc(t('scNotCut')) : '') + '</div>').join('') + '</div>';
+}
+
 /** 表（1行1件） */
 function trow(r) {
   const x = parts(r);
   const qty = r.status === '完了' ? t('good') + ' <b>' + r.good + '</b>／' + r.qty :
+    r.status === '中断' ? esc(t('stopping')) + ' ' + esc(t('remain')) + ' <b>' + r.remain + '</b>（' + esc(t('planned')) + ' ' + (r.plan || r.qty) + '）' + stopInfo(r) :
     '<b>' + r.remain + '</b>' + (r.remain !== r.qty ? '／' + r.qty : '');
   return '<tr class="st-' + esc(r.status) + (isHl(r) ? ' hl' : '') + '" data-row="' + esc(r.id) + '">' +
     '<td><span class="tag st st-' + esc(r.status) + '">' + esc(stName(r.status)) + '</span> ' + x.dateTag + (x.pend ? ' <span class="pending">' + esc(t('pending')) + '</span>' : '') +
     '<div class="note">' + esc(r.date) + '</div></td>' +
     '<td class="nowrap">' + esc(r.order) + '</td>' +
     '<td><b>' + esc(r.pno) + '</b><div class="name note">' + esc([r.maker, r.car, r.part].filter(Boolean).join(' ／ ')) + '</div>' + x.mat +
-    (x.meta.length ? '<div class="note">' + x.meta.join('　') + '</div>' : '') + '</td>' +
+    (x.meta.length ? '<div class="note">' + x.meta.join('　') + '</div>' : '') + (S.proc === 'BOND' ? scBlock(r) : '') + '</td>' +
     '<td class="nowrap">' + qty + (x.prev ? '<div class="note">' + x.prev + '</div>' : '') + '</td>' +
     '<td class="note">' + x.times + '</td>' +
     '<td class="tacts">' + x.main.replace('primary big', 'primary') + x.mid + x.sub + '</td></tr>';
@@ -925,9 +946,10 @@ function bcell(r, x, k) {
   const n = x.st === '対象外' ? '' : (x.good || x.st !== '未' ? ' ' + x.good + '/' + r.qty : '');
   const plan = x.st === '対象外' || !x.start ? '' : '<div class="plan">' + esc(md(x.start)) + (x.end && x.end !== x.start ? '〜' + esc(md(x.end)) : '') + '</div>';
   const label = esc(t('st_' + x.st)) + esc(n);
+  const scw = c === 'BOND' && r.scTodo && r.scTodo.length ? '<div class="scbadge" title="' + esc(r.scTodo.join(' / ')) + '">' + esc(t('scNotCutN')) + ' ' + r.scTodo.length + '</div>' : '';
   const el = canJump(c, x) ? '<button class="cell go ' + esc(x.st) + '" style="' + style + '" data-jp="' + c + '" data-jid="' + esc(r.id) + '" title="' + esc(procName(c)) + '">' + label + '</button>' :
     '<span class="cell ' + esc(x.st) + '" style="' + style + '">' + label + '</span>';
-  return el + plan;
+  return el + scw + plan;
 }
 
 function renderBoard() {

@@ -210,3 +210,11 @@ button.cell:active { transform: translateY(1px); }
   .actions.main button { min-height: 64px; font-size: 22px; }
   header .bar-right { margin-left: 0; }
 }
+
+/* 中断中の表示・接着のSC部品（未カットは赤字） */
+.stopq { color: var(--accent); font-weight: bold; }
+.stopinfo { margin-top: 2px; }
+.sclist { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--BOND); background: var(--panel2); }
+.scline { font-size: 15px; line-height: 1.5; }
+.sctodo { color: #FF5A5A; font-weight: bold; }
+.scbadge { display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px; background: #D93636; color: #fff; font-size: 12px; font-weight: bold; white-space: nowrap; }
